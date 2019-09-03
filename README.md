@@ -1,1 +1,3 @@
-Primera version de codigo para clases de teleinformatica
+Enunciado de tps y ejercicios resueltos para Teleinformatica
+
+Gridtics - FRM-UTN
