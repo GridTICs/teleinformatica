@@ -7,6 +7,7 @@
 #include "dev/serial-line.h"
 #include "dev/sys-ctrl.h"
 #include "net/rime/broadcast.h"
+#include "net/packetbuf.h"
 
 #include "dev/adxl346.h"
 #include "dev/max44009.h"
@@ -25,28 +26,34 @@ static void
 broadcast_recv(struct broadcast_conn *c, const linkaddr_t *from)
 {
   static int16_t counter;
-  uint16_t  x, y, z;
-  float light, temperature, humidity;
-  uint8_t offset;
+  int16_t x, y, z;
+  int16_t light, temperature, humidity;
+  uint16_t offset;
 
-  uint16_t len = packetbuf_datalen();
-  uint8_t * buf = (uint8_t *)packetbuf_dataptr();
+  int16_t len = packetbuf_datalen();
+  int16_t * buf = (int16_t *)packetbuf_dataptr();
 
   offset = 0;
-  counter = *(uint32_t *)&buf[offset];
+  counter = *(int16_t *)&buf[offset];
   offset += sizeof(counter);
-  temperature = *(float *)&buf[offset];
-  offset += sizeof(temperature);
-  humidity = *(float *)&buf[offset];
-  offset += sizeof(humidity);
-  light = *(float *)&buf[offset];
-  offset += sizeof(light);
-  x = *(uint32_t *)&buf[offset];
+
+  x = *(int16_t *)&buf[offset];
   offset += sizeof(x);
-  y = *(uint32_t *)&buf[offset];
+
+  y = *(int16_t *)&buf[offset];
   offset += sizeof(y);
-  z = *(uint32_t *)&buf[offset];
+
+  z = *(int16_t *)&buf[offset];
   offset += sizeof(z);
+  
+  temperature =  *(int16_t *)&buf[offset];
+  offset += sizeof(temperature);
+
+  humidity = *(int16_t *)&buf[offset];
+  offset += sizeof(humidity);
+
+  light = *(int16_t *)&buf[offset];
+  offset += sizeof(light);
 
   if((counter&0x3) == 0) {
     leds_toggle(LEDS_GREEN);
@@ -59,10 +66,13 @@ broadcast_recv(struct broadcast_conn *c, const linkaddr_t *from)
   }
 
   printf("\n\nReceived %u bytes: counter = %u\n", len, counter);
-  printf("Temperature: %u.%uC\n", (unsigned int)temperature, (unsigned int)(temperature * 100) % 100);
-  printf("Humidity: %u.%u%%\n", (unsigned int)humidity, (unsigned int)(humidity * 100) % 100);
-  printf("Light: %u.%ulux\n", (unsigned int)light, (unsigned int)(light * 100) % 100);
-  printf("X: %u, Y: %u, Z: %u\n\n", x, y, z);
+  printf("Temperature: %u.%uC\n", temperature / 100, temperature  % 100);
+  printf("Humidity: %u.%u%%\n", humidity / 100, humidity  % 100);
+  printf("Light: %u.%ulux\n", light / 100, light  % 100);
+  printf("X Acceleration: %d.%u G\n", x / 1000, x % 1000);
+  printf("Y Acceleration: %d.%u G\n", y / 1000, y % 1000);
+  printf("Z Acceleration: %d.%u G\n", z / 1000, z % 1000);
+
 }
 
 /*---------------------------------------------------------------------------*/
@@ -73,11 +83,11 @@ PROCESS_THREAD(openmote_gt_process, ev, data)
 {
   static struct etimer et;
   static int16_t counter;
-  static uint16_t axis;
-  static uint16_t adxl346_present, sht21_present, max44009_present;
-  static int16_t light, temperature, humidity;
-  static uint8_t buf[64];
-  static uint8_t offset;
+  int16_t x, y, z;
+  uint16_t adxl346_present, sht21_present, max44009_present;
+  int16_t light, temperature, humidity;
+  int16_t buf[64];
+  uint16_t offset;
 
   PROCESS_EXITHANDLER(broadcast_close(&bc))
 
@@ -136,47 +146,49 @@ PROCESS_THREAD(openmote_gt_process, ev, data)
           counter++;
           offset = 0;
 
-          memcpy(buf+offset, (void*)&counter, sizeof(counter));
+          memcpy(&buf[offset], (int16_t*)&counter, sizeof(counter));
           offset += sizeof(counter);
+
+          if(adxl346_present != ADXL346_ERROR) {
+            x = adxl346.value(ADXL346_READ_X_mG);
+            memcpy(&buf[offset], (int16_t*)&x, sizeof(x));
+            offset += sizeof(x);
+            y = adxl346.value(ADXL346_READ_Y_mG);
+            memcpy(&buf[offset], (int16_t*)&y, sizeof(y));
+            offset += sizeof(y);
+            z = adxl346.value(ADXL346_READ_Z_mG);
+            memcpy(&buf[offset], (int16_t*)&z, sizeof(z));
+            offset += sizeof(z);
+          } else {
+            memset(&buf[offset], 0xc, sizeof(x) * 3);
+            offset += sizeof(x) * 3;
+          }
 
           if(sht21_present != SHT21_ERROR) {
             temperature = sht21.value(SHT21_READ_TEMP);
-            memcpy(buf+offset, (void*)&temperature, sizeof(temperature));
+            memcpy(&buf[offset], (int16_t*)&temperature, sizeof(temperature));
             offset += sizeof(temperature);
             humidity = sht21.value(SHT21_READ_RHUM);
-            memcpy(buf+offset, (void*)&humidity, sizeof(humidity));
+            memcpy(&buf[offset], (int16_t*)&humidity, sizeof(humidity));
             offset += sizeof(humidity);
           } else {
-            memset(buf+offset, 0xa, sizeof(temperature) + sizeof(humidity));
+            memset(&buf[offset], 0xa, sizeof(temperature) + sizeof(humidity));
             offset += sizeof(temperature) + sizeof(humidity);
           }
 
           if(max44009_present != MAX44009_ERROR) {
             light = max44009.value(MAX44009_READ_LIGHT);
-            memcpy(buf+offset, (void*)&light, sizeof(light));
+            memcpy(&buf[offset], (int16_t*)&light, sizeof(light));
             offset += sizeof(light);
           } else {
-            memset(buf+offset, 0xb, sizeof(light));
+            memset(&buf[offset], 0xb, sizeof(light));
             offset += sizeof(light);
           }
 
-          if(adxl346_present != ADXL346_ERROR) {
-            axis = adxl346.value(ADXL346_READ_X_mG);
-            memcpy(buf+offset, (void*)&axis, sizeof(axis));
-            offset += sizeof(axis);
-            axis = adxl346.value(ADXL346_READ_Y_mG);
-            memcpy(buf+offset, (void*)&axis, sizeof(axis));
-            offset += sizeof(axis);
-            axis = adxl346.value(ADXL346_READ_Z_mG);
-            memcpy(buf+offset, (void*)&axis, sizeof(axis));
-            offset += sizeof(axis);
-          } else {
-            memset(buf+offset, 0xc, sizeof(axis) * 3);
-            offset += sizeof(axis) * 3;
-          }
-
-          packetbuf_copyfrom(buf, offset);
+          packetbuf_copyfrom(&buf[0], offset + packetbuf_hdrlen());
           broadcast_send(&bc);
+	  
+  	  
         }
       }
     }
@@ -184,5 +196,4 @@ PROCESS_THREAD(openmote_gt_process, ev, data)
 
   PROCESS_END();
 }
-
 
